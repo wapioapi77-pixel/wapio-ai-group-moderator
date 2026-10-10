@@ -1,0 +1,10 @@
+# Voiceover Audio files
+voiceover-audio/
+*.mp3
+*.wav
+
+# OS & Temp
+.DS_Store
+Thumbs.db
+*.log
+node_modules/

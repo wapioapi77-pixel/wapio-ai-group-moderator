@@ -1,0 +1,319 @@
+{
+  "name": "Autonomous AI WhatsApp Group Moderator (n8n + Wapio)",
+  "nodes": [
+    {
+      "parameters": {
+        "sessionId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": ""
+        },
+        "events": [
+          "messages.received"
+        ]
+      },
+      "name": "Wapio Trigger",
+      "type": "n8n-nodes-wapio.wapioTrigger",
+      "typeVersion": 1,
+      "position": [
+        -600,
+        300
+      ],
+      "id": "trigger-wapio-moderator-001"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "fromMe-check",
+              "leftValue": "={{ $json.data.messages.key.fromMe }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Filter Outgoing (fromMe == false)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -360,
+        300
+      ],
+      "id": "filter-fromme-moderator-002"
+    },
+    {
+      "parameters": {
+        "jsCode": "// =========================================================================\n// ⚙️ CONFIGURATION: DEFINE MANAGED GROUPS & THEIR ADMIN PHONE NUMBERS\n// =========================================================================\n// Replace with your real WhatsApp Group JID (@g.us) and your Admin phone number.\n// You can add as many groups as you want!\nconst MANAGED_GROUPS = {\n  '120363412067748618@g.us': '212673684266' // e.g. 'GROUP_JID@g.us': 'ADMIN_PHONE_NUMBER'\n};\n\nconst item = $input.first().json;\nconst data = item.data?.messages || item.data || item;\nconst fromJid = data.key?.remoteJid || data.from || '';\n\n// Silently ignore messages from non-managed groups or private chats\nif (!MANAGED_GROUPS[fromJid]) {\n  return [];\n}\n\nconst adminPhone = MANAGED_GROUPS[fromJid];\nconst msgObj = data.message || {};\nconst rawText = (\n  msgObj.conversation ||\n  msgObj.extendedTextMessage?.text ||\n  msgObj.imageMessage?.caption ||\n  msgObj.videoMessage?.caption ||\n  msgObj.documentMessage?.caption ||\n  data.messageBody ||\n  ''\n).trim();\n\nconst messageId = data.key?.id || '';\nconst senderJid = data.key?.participant || data.participant || fromJid;\nconst senderPhone = senderJid.split('@')[0].split(':')[0];\nconst senderName = data.pushName || senderPhone;\nconst groupName = item.groupName || 'Community Group';\n\nreturn [{\n  json: {\n    groupJid: fromJid,\n    groupName,\n    adminPhone,\n    messageId,\n    senderJid,\n    senderPhone,\n    senderName,\n    messageText: rawText,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "name": "Group and Admin Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -120,
+        300
+      ],
+      "id": "config-groups-moderator-003"
+    },
+    {
+      "parameters": {
+        "jsCode": "// =========================================================================\n// 🛡️ ZERO-LATENCY CONTENT CLASSIFIER / JEV AI DECISION ENGINE\n// =========================================================================\n// Classifies messages in <1ms without latency.\n// Ignores normal banter, shouting, and clean messages.\nconst item = $input.first().json;\nconst text = item.messageText || '';\nconst lower = text.toLowerCase();\n\n// 1. Detect unauthorized links (web URLs, Telegram, Discord, WhatsApp group invites)\nconst urlRegex = /(https?:\\/\\/[^\\s]+|www\\.[^\\s]+|bit\\.ly\\/[^\\s]+|t\\.me\\/[^\\s]+|wa\\.me\\/[^\\s]+|chat\\.whatsapp\\.com\\/[^\\s]+|discord\\.gg\\/[^\\s]+|[a-z0-9-]+\\.(com|net|org|io|xyz|top|link|app|info|vip|club)\\b)/i;\nconst hasLink = urlRegex.test(text);\n\n// 2. High-risk scam keywords\nconst scamKeywords = [\n  'airdrop', 'free crypto', 'pump signal', 'forex signals', 'guaranteed profit',\n  'dm me for info', 'inbox me for details', 'double your investment'\n];\nconst hasScam = scamKeywords.some(kw => lower.includes(kw));\n\n// 3. Severe abusive / hate speech words\nconst hateWords = ['fuck', 'bitch', 'asshole', 'stfu', 'dick'];\nconst hasHateSpeech = hateWords.some(w => lower.includes(w));\n\nlet action = 'clean';\nlet reason = '';\n\nif (hasLink || hasScam) {\n  action = 'warn_link';\n  reason = 'External link or promotional content shared without approval';\n} else if (hasHateSpeech) {\n  action = 'warn_hate';\n  reason = 'Abusive or disrespectful language';\n}\n\nreturn [{\n  json: {\n    ...item,\n    action,\n    reason,\n    isViolation: action !== 'clean'\n  }\n}];"
+      },
+      "name": "Jev AI Decision Engine (<300ms)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        140,
+        300
+      ],
+      "id": "engine-rules-moderator-004"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "link-rule-check",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "warn_link",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "hate-rule-check",
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "warn_hate",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Router (Action Switch)",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        400,
+        300
+      ],
+      "id": "switch-action-moderator-005"
+    },
+    {
+      "parameters": {
+        "sessionId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": ""
+        },
+        "to": "={{ $json.groupJid }}",
+        "text": "={{ \"⚠️ @\" + ($json.senderPhone || $json.senderName) + \" Please respect the group rules: do not send links or promotions without admin approval. 🙏\" }}",
+        "replyTo": "={{ $json.messageId }}",
+        "mentions": "={{ [ $json.senderJid ] }}"
+      },
+      "name": "💬 Quoted Reply: Link Rule",
+      "type": "n8n-nodes-wapio.wapio",
+      "typeVersion": 1,
+      "position": [
+        680,
+        180
+      ],
+      "id": "wapio-reply-link-006"
+    },
+    {
+      "parameters": {
+        "sessionId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": ""
+        },
+        "to": "={{ $('Group and Admin Config').first().json.adminPhone }}",
+        "text": "={{ \"🚨 *[Group Link Violation Alert]*\\n\\n*Group:* \" + $('Group and Admin Config').first().json.groupName + \"\\n*Sender:* @\" + $('Group and Admin Config').first().json.senderPhone + \" (\" + $('Group and Admin Config').first().json.senderName + \")\\n\\n📝 *Message Content:*\\n\\\"\" + $('Group and Admin Config').first().json.messageText + \"\\\"\\n\\n📌 *Message ID:* \\`\" + $('Group and Admin Config').first().json.messageId + \"\\`\\n\\n_A quoted rule reminder has been posted in the group chat._\" }}"
+      },
+      "name": "🚨 Alert Admin: Link Shared",
+      "type": "n8n-nodes-wapio.wapio",
+      "typeVersion": 1,
+      "position": [
+        920,
+        180
+      ],
+      "id": "wapio-alert-link-007"
+    },
+    {
+      "parameters": {
+        "sessionId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": ""
+        },
+        "to": "={{ $json.groupJid }}",
+        "text": "={{ \"⚠️ @\" + ($json.senderPhone || $json.senderName) + \" Please respect the group rules: do not use hateful or abusive language. Let's keep our community friendly! 🙏\" }}",
+        "replyTo": "={{ $json.messageId }}",
+        "mentions": "={{ [ $json.senderJid ] }}"
+      },
+      "name": "💬 Quoted Reply: Respect Rule",
+      "type": "n8n-nodes-wapio.wapio",
+      "typeVersion": 1,
+      "position": [
+        680,
+        420
+      ],
+      "id": "wapio-reply-hate-008"
+    },
+    {
+      "parameters": {
+        "sessionId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": ""
+        },
+        "to": "={{ $('Group and Admin Config').first().json.adminPhone }}",
+        "text": "={{ \"🚨 *[Abusive Language Alert]*\\n\\n*Group:* \" + $('Group and Admin Config').first().json.groupName + \"\\n*Sender:* @\" + $('Group and Admin Config').first().json.senderPhone + \" (\" + $('Group and Admin Config').first().json.senderName + \")\\n\\n📝 *Message Content:*\\n\\\"\" + $('Group and Admin Config').first().json.messageText + \"\\\"\\n\\n📌 *Message ID:* \\`\" + $('Group and Admin Config').first().json.messageId + \"\\`\\n\\n_A quoted rule reminder has been posted in the group chat._\" }}"
+      },
+      "name": "🚨 Alert Admin: Abusive Language",
+      "type": "n8n-nodes-wapio.wapio",
+      "typeVersion": 1,
+      "position": [
+        920,
+        420
+      ],
+      "id": "wapio-alert-hate-009"
+    }
+  ],
+  "connections": {
+    "Wapio Trigger": {
+      "main": [
+        [
+          {
+            "node": "Filter Outgoing (fromMe == false)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Outgoing (fromMe == false)": {
+      "main": [
+        [
+          {
+            "node": "Group and Admin Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Group and Admin Config": {
+      "main": [
+        [
+          {
+            "node": "Jev AI Decision Engine (<300ms)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Jev AI Decision Engine (<300ms)": {
+      "main": [
+        [
+          {
+            "node": "Router (Action Switch)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Router (Action Switch)": {
+      "main": [
+        [
+          {
+            "node": "💬 Quoted Reply: Link Rule",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "💬 Quoted Reply: Respect Rule",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "💬 Quoted Reply: Link Rule": {
+      "main": [
+        [
+          {
+            "node": "🚨 Alert Admin: Link Shared",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "💬 Quoted Reply: Respect Rule": {
+      "main": [
+        [
+          {
+            "node": "🚨 Alert Admin: Abusive Language",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
